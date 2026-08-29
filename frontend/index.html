@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能信息提取系统</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f7f7f5; color: #26262a; font-size: 14px; }
+#app { display: flex; min-height: 100vh; }
+.sidebar { width: 180px; flex-shrink: 0; background: #fff; border-right: 1px solid #e8e7e2; padding: 16px 10px; }
+.logo { font-weight: 600; font-size: 15px; padding: 0 8px; }
+.sub { font-size: 11px; color: #9a9992; padding: 0 8px; margin-bottom: 18px; }
+.nav { display: block; width: 100%; text-align: left; padding: 9px 12px; border: 0; background: none; border-radius: 8px; cursor: pointer; font-size: 13px; color: #6b6a63; margin-bottom: 2px; }
+.nav.on { background: #f1f0eb; color: #26262a; font-weight: 500; }
+.main { flex: 1; padding: 24px 32px; min-width: 0; }
+h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+.desc { color: #8a897f; font-size: 13px; margin: 0 0 16px; }
+.card { background: #fff; border: 1px solid #e8e7e2; border-radius: 12px; padding: 16px 20px; margin-bottom: 14px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+label.fl { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border: 1px solid #e8e7e2; border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+.btn { border: 1px solid #d5d4cd; background: #fff; border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px; }
+.btn.primary { background: #185fa5; border-color: #185fa5; color: #fff; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: #8a897f; font-weight: 400; padding: 6px 8px; }
+td { padding: 9px 8px; border-top: 1px solid #efeee9; vertical-align: top; }
+.badge { font-size: 11px; padding: 2px 9px; border-radius: 99px; white-space: nowrap; }
+.b-green { background: #eaf3de; color: #3b6d11; } .b-blue { background: #e6f1fb; color: #185fa5; }
+.b-red { background: #fcebeb; color: #a32d2d; } .b-amber { background: #faeeda; color: #854f0b; }
+.b-gray { background: #f1efe8; color: #6b6a63; }
+input[type=text], input[type=password], select { border: 1px solid #d5d4cd; border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 100%; background: #fff; }
+.drop { border: 1.5px dashed #b8cfe8; border-radius: 12px; padding: 26px; text-align: center; color: #6b6a63; cursor: pointer; }
+.drop:hover { background: #f4f8fd; }
+.chip { display: inline-block; padding: 4px 11px; border: 1px solid #e0dfd8; border-radius: 99px; font-size: 12px; margin: 0 6px 6px 0; cursor: pointer; color: #6b6a63; }
+.chip.on { background: #e6f1fb; border-color: #85b7eb; color: #185fa5; }
+.evi { color: #9a9992; font-size: 12px; border-left: 2px solid #e0dfd8; padding-left: 8px; }
+.err { color: #a32d2d; font-size: 12px; margin-top: 8px; }
+.ok { color: #3b6d11; font-size: 12px; margin-top: 8px; }
+.muted { color: #9a9992; font-size: 12px; }
+.progress { background: #efeee9; border-radius: 99px; height: 6px; width: 80px; display: inline-block; vertical-align: middle; }
+.progress > div { background: #378add; border-radius: 99px; height: 6px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+.metric { background: #fff; border: 1px solid #e8e7e2; border-radius: 12px; padding: 12px 16px; }
+.metric .num { font-size: 22px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="sidebar">
+    <div class="logo">信息提取系统</div>
+    <div class="sub">Doc Intelligence</div>
+    <button class="nav" :class="{on: view==='launch'}" @click="view='launch'">任务发起</button>
+    <button class="nav" :class="{on: view==='tasks'}" @click="view='tasks'; loadTasks()">任务列表</button>
+    <button class="nav" :class="{on: view==='templates'}" @click="view='templates'; loadSchemas()">模板管理</button>
+    <button class="nav" :class="{on: view==='models'}" @click="view='models'; loadConfigs()">模型配置</button>
+  </div>
+  <div class="main">
+
+    <!-- 任务发起 -->
+    <div v-if="view==='launch'">
+      <h2>发起提取任务</h2>
+      <p class="desc">上传文件 → 选择模板（或让系统自动识别文档类型）→ 发起</p>
+      <div class="grid2">
+        <div class="card">
+          <div class="drop" @click="$refs.fileinput.click()">拖拽或点击上传文件（可多选）<div class="muted" style="margin-top:4px">docx / pdf / txt / xlsx / csv / md / 图片（png·jpg 自动 OCR）</div></div>
+          <input ref="fileinput" type="file" multiple accept=".pdf,.docx,.xlsx,.txt,.csv,.md,.png,.jpg,.jpeg" hidden @change="uploadFiles($event.target.files)">
+          <div v-for="f in uploaded" :key="f.file_id" style="display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid #efeee9;">
+            <span>{{ f.filename }}</span><span class="muted">{{ (f.size/1024).toFixed(0) }} KB</span>
+          </div>
+          <div v-if="uploading" class="muted" style="margin-top:8px">上传中…</div>
+        </div>
+        <div class="card">
+          <div style="margin-bottom:8px;font-weight:500">提取模板</div>
+          <select v-model="selectedSchema">
+            <option :value="null">自动识别文档类型（智能匹配）</option>
+            <option v-for="s in schemas" :key="s.id" :value="s.id">{{ s.name }}（{{ s.category || '未分类' }} · v{{ s.version }}）</option>
+          </select>
+          <template v-if="selectedSchema">
+            <div style="margin:12px 0 6px;font-weight:500">勾选本次提取字段</div>
+            <label class="fl" v-for="f in currentSchema.fields" :key="f.key">
+              <span>{{ f.label }} <span class="muted">{{ f.type }}</span></span>
+              <input type="checkbox" v-model="selectedFields[f.key]">
+            </label>
+          </template>
+          <div v-else class="muted" style="margin-top:12px">
+            未选模板时，系统将读取每个文件的前两页内容，自动判断其归属的模板类别；低置信度文件会在结果页提示确认。
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px">
+        <span class="muted">模型</span>
+        <select v-model="selectedConfig" style="max-width:240px">
+          <option :value="null">默认配置</option>
+          <option v-for="c in configs" :key="c.id" :value="c.id">{{ c.name }}（{{ c.model }}）</option>
+        </select>
+        <span class="muted">优先级</span>
+        <select v-model="priority" style="max-width:130px">
+          <option :value="9">加急（优先处理）</option>
+          <option :value="5">普通</option>
+          <option :value="1">低（后台任务）</option>
+        </select>
+        <button class="btn primary" style="margin-left:auto" :disabled="!uploaded.length || launching" @click="launch">
+          {{ launching ? '发起中…' : '发起提取' }}
+        </button>
+      </div>
+      <div class="err" v-if="launchError">{{ launchError }}</div>
+    </div>
+
+    <!-- 任务列表 -->
+    <div v-if="view==='tasks'">
+      <h2>任务列表</h2>
+      <p class="desc">点击已完成任务查看提取结果</p>
+      <table>
+        <tr><th>任务</th><th>模式</th><th>进度</th><th>状态</th><th>创建时间</th><th></th></tr>
+        <tr v-for="t in tasks" :key="t.id">
+          <td>{{ t.id.slice(0,8) }}…</td>
+          <td><span class="badge" :class="t.match_mode==='auto' ? 'b-blue' : 'b-gray'">{{ t.match_mode==='auto' ? '智能匹配' : '指定模板' }}</span></td>
+          <td><span class="progress"><div :style="{width: t.progress + '%'}"></div></span> {{ t.progress }}%</td>
+          <td><span class="badge" :class="statusCls(t.status)">{{ statusText(t.status) }}</span></td>
+          <td class="muted">{{ t.created_at.slice(0,19).replace('T',' ') }}</td>
+          <td><button class="btn" @click="openTask(t)">结果</button></td>
+        </tr>
+      </table>
+
+      <div v-if="detail" class="card" style="margin-top:18px">
+        <div style="display:flex;align-items:center">
+          <div>
+            <h2>结果核对 · {{ detail.id.slice(0,8) }}…</h2>
+            <p class="desc" style="margin:0">每个字段附原文依据（evidence），"未找到"显式标记为 null</p>
+          </div>
+          <div style="flex:1"></div>
+          <button class="btn" v-if="['pending','running'].includes(detail.status)" @click="cancelTask">取消任务</button>
+          <button class="btn" @click="download(`/api/tasks/${detail.id}/export?format=xlsx`, 'result.xlsx')">导出 Excel</button>
+          <button class="btn" style="margin-left:8px" @click="download(`/api/tasks/${detail.id}/export?format=json`, 'result.json')">导出 JSON</button>
+        </div>
+        <div v-for="f in detail.files" :key="f.file_id" style="margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <b>{{ f.filename }}</b>
+            <span class="badge" :class="matchCls(f)">{{ matchText(f) }}</span>
+            <span class="muted" v-if="f.schema_name">{{ f.schema_name }}</span>
+            <span class="muted" v-if="f.coverage !== null">覆盖率 {{ (f.coverage*100).toFixed(0) }}%</span>
+            <span style="flex:1"></span>
+            <select v-if="f.match_status!=='bound'" style="max-width:180px" @change="reassign(f, $event.target.value)">
+              <option value="">改派模板…</option>
+              <option v-for="s in schemas" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </div>
+          <div class="err" v-if="f.error">{{ f.error }}</div>
+          <table v-if="f.results">
+            <tr><th style="width:130px">字段</th><th style="width:200px">提取值</th><th>原文依据</th><th style="width:70px"></th></tr>
+            <tr v-for="(v, k) in f.results" :key="k">
+              <td>{{ v.label || fieldLabel(k) }} <span class="muted">{{ k }}</span></td>
+              <td>
+                <span v-if="v.value === null" class="badge b-gray">未找到 · null</span>
+                <template v-else-if="Array.isArray(v.value)">
+                  <div v-for="(x, i) in v.value" :key="i">{{ x }}</div>
+                </template>
+                <template v-else>
+                  <b>{{ v.value }}</b>
+                  <span v-if="v.corrected" class="badge b-green" style="margin-left:6px">已修正</span>
+                </template>
+                <div class="muted" v-if="v.original_value !== undefined" style="font-size:11px">原值：{{ String(v.original_value).slice(0,40) }}</div>
+              </td>
+              <td><span class="evi" v-if="v.evidence">{{ v.evidence }}</span><span class="muted" v-if="v.page" style="margin-left:6px">第 {{ v.page }} 页</span></td>
+              <td><button class="btn" style="font-size:12px;padding:3px 9px" @click="correctField(f, k, v)">修正</button></td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模板管理 -->
+    <div v-if="view==='templates'">
+      <div style="display:flex;align-items:center">
+        <div>
+          <h2>模板管理</h2>
+          <p class="desc" style="margin:0">按文件类型分类；预置模板不可删改，可复制后修改；支持 JSON 导入导出共享</p>
+        </div>
+        <div style="flex:1"></div>
+        <button class="btn" @click="$refs.importInput.click()">导入模板 JSON</button>
+        <input ref="importInput" type="file" accept=".json" hidden @change="importSchemaFile($event.target.files)">
+      </div>
+      <div>
+        <span class="chip" :class="{on: catFilter===''}" @click="catFilter=''">全部</span>
+        <span class="chip" v-for="c in categories" :key="c" :class="{on: catFilter===c}" @click="catFilter=c">{{ c }}</span>
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="card" v-for="s in filteredSchemas" :key="s.id">
+          <div style="display:flex;align-items:center;gap:8px">
+            <b>{{ s.name }}</b>
+            <span class="badge" :class="s.is_preset ? 'b-amber' : 'b-blue'">{{ s.is_preset ? '预置' : '自定义' }}</span>
+            <span style="flex:1"></span>
+            <span class="muted">v{{ s.version }}</span>
+          </div>
+          <div class="muted" style="margin:6px 0">{{ s.category || '未分类' }} · {{ s.fields.length }} 个字段 · {{ s.description || '' }}</div>
+          <div><span class="chip" v-for="f in s.fields.slice(0,6)" :key="f.key">{{ f.label }}</span>
+            <span class="chip" v-if="s.fields.length>6">+{{ s.fields.length-6 }}</span></div>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn" @click="openEditor(s)">编辑</button>
+            <button class="btn" @click="copySchema(s)">复制</button>
+            <button class="btn" @click="download(`/api/schemas/${s.id}/export`, `${s.name}.json`)">导出</button>
+            <button class="btn" v-if="!s.is_preset" @click="delSchema(s)">删除</button>
+          </div>
+        </div>
+        <div style="border:1.5px dashed #b8cfe8;border-radius:12px;padding:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#6b6a63;font-size:13px;min-height:120px" @click="openEditor(null)">+ 新建模板</div>
+      </div>
+    </div>
+
+    <!-- 模型配置 -->
+    <div v-if="view==='models'">
+      <h2>模型配置</h2>
+      <p class="desc">任意 OpenAI 兼容接口（GLM / DeepSeek / Ollama 等）；key 加密存储</p>
+      <div class="card" style="max-width:560px">
+        <div class="grid2" style="gap:10px">
+          <div><div class="muted">配置名称</div><input type="text" v-model="cfgForm.name"></div>
+          <div><div class="muted">模型</div><input type="text" v-model="cfgForm.model" placeholder="glm-4-flash"></div>
+          <div style="grid-column:span 2"><div class="muted">Base URL</div><input type="text" v-model="cfgForm.base_url" placeholder="https://open.bigmodel.cn/api/paas/v4"></div>
+          <div style="grid-column:span 2"><div class="muted">API Key（编辑时留空表示保留原值）</div><input type="password" v-model="cfgForm.api_key"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+          <input type="checkbox" v-model="cfgForm.is_default"> 设为默认配置
+        </label>
+        <div style="display:flex;gap:10px;margin-top:14px;align-items:center">
+          <button class="btn" @click="saveConfig">{{ cfgForm.id ? '更新' : '保存' }}</button>
+          <button class="btn" v-if="cfgForm.id" @click="testConfig">测试连通</button>
+          <button class="btn" v-if="cfgForm.id" @click="resetCfgForm">新建另一配置</button>
+          <span class="ok" v-if="cfgMsg.ok">{{ cfgMsg.text }}</span>
+          <span class="err" v-if="!cfgMsg.ok && cfgMsg.text" style="margin:0">{{ cfgMsg.text }}</span>
+        </div>
+      </div>
+      <table>
+        <tr><th>名称</th><th>Base URL</th><th>模型</th><th>默认</th><th></th></tr>
+        <tr v-for="c in configs" :key="c.id">
+          <td>{{ c.name }}</td><td class="muted">{{ c.base_url }}</td><td>{{ c.model }}</td>
+          <td><span class="badge" :class="c.is_default ? 'b-green' : 'b-gray'">{{ c.is_default ? '默认' : '' }}</span></td>
+          <td><button class="btn" @click="editConfig(c)">编辑</button></td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- 模板编辑器弹窗 -->
+    <div v-if="editor.open" style="position:fixed;inset:0;background:rgba(30,30,30,.4);display:flex;align-items:center;justify-content:center;z-index:20">
+      <div class="card" style="width:760px;max-height:88vh;overflow:auto;margin:0">
+        <h2>{{ editor.id ? '编辑模板' : '新建模板' }}</h2>
+        <p class="desc">字段 = 一条提取项；label 和 desc 是给大模型的语义提示，写得越具体提取越准</p>
+        <div class="grid2" style="gap:10px">
+          <div><div class="muted">模板名称</div><input type="text" v-model="editor.name" placeholder="如：采购合同模板"></div>
+          <div><div class="muted">分类（文件类型）</div><input type="text" v-model="editor.category" placeholder="如：合同类" list="catList">
+            <datalist id="catList"><option v-for="c in categories" :key="c" :value="c"></option></datalist>
+          </div>
+          <div style="grid-column:span 2"><div class="muted">描述</div><input type="text" v-model="editor.description" placeholder="模板用途说明"></div>
+        </div>
+        <table style="margin-top:12px">
+          <tr><th style="width:150px">字段 key</th><th style="width:150px">名称 label</th><th style="width:100px">类型</th><th>提取提示 desc</th><th style="width:50px"></th></tr>
+          <tr v-for="(f, i) in editor.fields" :key="i">
+            <td><input type="text" v-model="f.key" placeholder="party_a"></td>
+            <td><input type="text" v-model="f.label" placeholder="甲方名称"></td>
+            <td><select v-model="f.type">
+              <option value="string">string</option><option value="number">number</option>
+              <option value="date">date</option><option value="boolean">boolean</option>
+              <option value="array">array</option><option value="enum">enum</option>
+            </select></td>
+            <td><input type="text" v-model="f.desc" placeholder="在哪里找、什么格式，如：合同中甲方全称"></td>
+            <td><button class="btn" @click="delField(i)" :disabled="editor.fields.length<=1">×</button></td>
+          </tr>
+        </table>
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
+          <button class="btn" @click="addField">+ 添加字段</button>
+          <span style="flex:1"></span>
+          <button class="btn" @click="editor.open=false">取消</button>
+          <button class="btn primary" @click="saveEditor">保存模板</button>
+        </div>
+        <div class="err" v-if="editorError">{{ editorError }}</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+<script>
+const { createApp, ref, computed, onMounted } = Vue;
+createApp({
+  setup() {
+    const view = ref('launch');
+    const schemas = ref([]), configs = ref([]), tasks = ref([]);
+    const uploaded = ref([]), uploading = ref(false);
+    const selectedSchema = ref(null), selectedFields = ref({}), selectedConfig = ref(null);
+    const priority = ref(5);
+    const launching = ref(false), launchError = ref('');
+    const detail = ref(null), catFilter = ref('');
+    const cfgForm = ref({ id: null, name: '', base_url: '', api_key: '', model: '', is_default: false });
+    const cfgMsg = ref({ ok: true, text: '' });
+    let es = null;
+
+    const apiKey = () => localStorage.getItem('apiKey') || '';
+    const api = (path, opts) => {
+      opts = opts || {};
+      opts.headers = { ...(opts.headers || {}) };
+      if (apiKey()) opts.headers['X-API-Key'] = apiKey();
+      return fetch('/api' + path, opts).then(async r => {
+        if (r.status === 401) { promptApiKey(); throw new Error('无效的 API Key'); }
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+        return r.json();
+      });
+    };
+    function promptApiKey() {
+      const k = prompt('本系统已开启 API 认证，请输入 API Key（留空清除）：');
+      if (k !== null) { localStorage.setItem('apiKey', k.trim()); location.reload(); }
+    }
+
+    const currentSchema = computed(() => schemas.value.find(s => s.id === selectedSchema.value) || { fields: [] });
+    const categories = computed(() => [...new Set(schemas.value.map(s => s.category).filter(Boolean))]);
+    const filteredSchemas = computed(() => schemas.value.filter(s => !catFilter.value || s.category === catFilter.value));
+
+    async function loadSchemas() { schemas.value = await api('/schemas'); }
+    async function loadConfigs() { configs.value = await api('/llm-configs'); }
+    async function loadTasks() {
+      tasks.value = await api('/tasks');
+      if (detail.value && ['running', 'pending'].includes(detail.value.status)) openTask({ id: detail.value.id });
+    }
+    function startSSE(id) {
+      if (es) { es.close(); es = null; }
+      const qs = apiKey() ? `?api_key=${encodeURIComponent(apiKey())}` : '';
+      es = new EventSource(`/api/tasks/${id}/events${qs}`);
+      es.onmessage = ev => {
+        const d = JSON.parse(ev.data);
+        if (detail.value) { detail.value.status = d.status; detail.value.progress = d.progress; }
+        if (['succeeded', 'failed', 'partially_succeeded', 'cancelled'].includes(d.status)) {
+          es.close(); es = null;
+          openTask({ id }); loadTasks();
+        }
+      };
+      es.onerror = () => { es.close(); es = null; loadTasks(); };
+    }
+    async function uploadFiles(fileList) {
+      uploading.value = true;
+      const fd = new FormData();
+      for (const f of fileList) fd.append('files', f);
+      try { uploaded.value.push(...await api('/files', { method: 'POST', body: fd })); }
+      catch (e) { alert('上传失败: ' + e.message); }
+      uploading.value = false;
+    }
+    async function launch() {
+      launching.value = true; launchError.value = '';
+      try {
+        const body = { file_ids: uploaded.value.map(f => f.file_id), schema_id: selectedSchema.value,
+          llm_config_id: selectedConfig.value, priority: priority.value };
+        if (selectedSchema.value) {
+          body.selected_fields = currentSchema.value.fields.filter(f => selectedFields.value[f.key] !== false).map(f => f.key);
+        }
+        const r = await api('/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        uploaded.value = []; selectedFields.value = {};
+        openTask({ id: r.task_id });
+        view.value = 'tasks';
+      } catch (e) { launchError.value = e.message; }
+      launching.value = false;
+    }
+    async function openTask(t) {
+      if (es) { es.close(); es = null; }
+      const d = await api('/tasks/' + t.id);
+      detail.value = d;
+      if (['running', 'pending'].includes(d.status)) startSSE(t.id);
+    }
+    async function reassign(f, sid) {
+      if (!sid) return;
+      try {
+        await api(`/tasks/${detail.value.id}/files/${f.file_id}/reassign`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schema_id: sid }) });
+        openTask({ id: detail.value.id });
+      } catch (e) { alert(e.message); }
+    }
+    async function cancelTask() {
+      if (!confirm('确认取消该任务？正在处理的文件完成后停止。')) return;
+      try {
+        await api(`/tasks/${detail.value.id}/cancel`, { method: 'POST' });
+        if (es) { es.close(); es = null; }
+        openTask({ id: detail.value.id }); loadTasks();
+      } catch (e) { alert(e.message); }
+    }
+    function fieldLabel(key) {
+      for (const s of schemas.value) { const f = (s.fields || []).find(x => x.key === key); if (f) return f.label; }
+      return key;
+    }
+    function download(url, name) {
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    async function correctField(f, key, item) {
+      const cur = typeof item.value === 'string' ? item.value : '';
+      const newVal = prompt(`为字段「${item.label || key}」输入正确值（将作为同模板后续提取的参考）`, cur);
+      if (newVal === null) return;
+      try {
+        await api(`/tasks/${detail.value.id}/files/${f.file_id}/corrections`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ field_key: key, value: newVal, label: item.label || key })
+        });
+        item.original_value = item.value;
+        item.value = newVal; item.corrected = true;
+      } catch (e) { alert(e.message); }
+    }
+    async function importSchemaFile(fileList) {
+      const file = fileList[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        await api('/schemas/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
+        alert('模板导入成功');
+        loadSchemas();
+      } catch (e) { alert('导入失败: ' + e.message); }
+      const input = document.querySelector('input[accept=".json"]');
+      if (input) input.value = '';
+    }
+    const statusText = s => ({ pending: '等待中', running: '运行中', succeeded: '已完成', partially_succeeded: '部分成功', failed: '失败', cancelled: '已取消' }[s] || s);
+    const statusCls = s => ({ pending: 'b-gray', running: 'b-blue', succeeded: 'b-green', partially_succeeded: 'b-amber', failed: 'b-red', cancelled: 'b-gray' }[s] || 'b-gray');
+    const matchText = f => ({ bound: '模板已绑定', need_confirm: '待确认 · 低置信度', unmatched: '未匹配' }[f.match_status] || f.match_status);
+    const matchCls = f => ({ bound: 'b-green', need_confirm: 'b-amber', unmatched: 'b-red' }[f.match_status] || 'b-gray');
+
+    async function copySchema(s) { await api(`/schemas/${s.id}/copy`, { method: 'POST' }); loadSchemas(); }
+    async function delSchema(s) { if (confirm(`确认删除模板「${s.name}」？`)) { await api(`/schemas/${s.id}`, { method: 'DELETE' }); loadSchemas(); } }
+
+    const editor = ref({ open: false, id: null, name: '', category: '', description: '', fields: [] });
+    const editorError = ref('');
+    function openEditor(s) {
+      editorError.value = '';
+      if (!s) {
+        editor.value = { open: true, id: null, name: '', category: '', description: '',
+          fields: [{ key: '', label: '', type: 'string', desc: '' }] };
+        return;
+      }
+      const doOpen = t => editor.value = { open: true, id: t.id, name: t.name, category: t.category || '',
+        description: t.description || '', fields: t.fields.map(f => ({ ...f })) };
+      if (s.is_preset) {
+        api(`/schemas/${s.id}/copy`, { method: 'POST' }).then(t => { loadSchemas(); doOpen(t); })
+          .catch(e => alert(e.message));
+      } else doOpen(s);
+    }
+    function addField() { editor.value.fields.push({ key: '', label: '', type: 'string', desc: '' }); }
+    function delField(i) { editor.value.fields.splice(i, 1); }
+    async function saveEditor() {
+      const e = editor.value;
+      editorError.value = '';
+      const fields = e.fields.filter(f => f.key.trim() || f.label.trim());
+      for (const f of fields) {
+        if (!f.key.trim()) { editorError.value = '存在未填写 key 的字段'; return; }
+        if (!f.label.trim()) { editorError.value = `字段 ${f.key} 缺少名称 label`; return; }
+      }
+      try {
+        const body = { name: e.name, category: e.category || null, description: e.description || null, fields };
+        await api(e.id ? `/schemas/${e.id}` : '/schemas', {
+          method: e.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        e.open = false;
+        loadSchemas();
+      } catch (err) { editorError.value = err.message; }
+    }
+
+    function resetCfgForm() { cfgForm.value = { id: null, name: '', base_url: '', api_key: '', model: '', is_default: false }; cfgMsg.value = { ok: true, text: '' }; }
+    function editConfig(c) { cfgForm.value = { id: c.id, name: c.name, base_url: c.base_url, api_key: '', model: c.model, is_default: c.is_default }; cfgMsg.value = { ok: true, text: '' }; }
+    async function saveConfig() {
+      cfgMsg.value = { ok: true, text: '' };
+      try {
+        const m = cfgForm.value.id ? 'PUT' : 'POST';
+        const url = cfgForm.value.id ? `/llm-configs/${cfgForm.value.id}` : '/llm-configs';
+        await api(url, { method: m, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfgForm.value) });
+        cfgMsg.value = { ok: true, text: '已保存' };
+        loadConfigs();
+      } catch (e) { cfgMsg.value = { ok: false, text: e.message }; }
+    }
+    async function testConfig() {
+      cfgMsg.value = { ok: true, text: '测试中…' };
+      try { const r = await api(`/llm-configs/${cfgForm.value.id}/test`, { method: 'POST' });
+        cfgMsg.value = r.ok ? { ok: true, text: `连接成功（${r.latency_ms}ms）` } : { ok: false, text: r.error };
+      } catch (e) { cfgMsg.value = { ok: false, text: e.message }; }
+    }
+
+    onMounted(() => { loadSchemas(); loadConfigs(); });
+    return { view, schemas, configs, tasks, uploaded, uploading, selectedSchema, selectedFields, selectedConfig,
+      launching, launchError, detail, catFilter, cfgForm, cfgMsg, currentSchema, categories, filteredSchemas,
+      editor, editorError, openEditor, addField, delField, saveEditor,
+      priority, correctField, download, importSchemaFile,
+      loadTasks, loadSchemas, loadConfigs, uploadFiles, launch, openTask, reassign, cancelTask, fieldLabel,
+      statusText, statusCls, matchText, matchCls, copySchema, delSchema, resetCfgForm, editConfig, saveConfig, testConfig };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

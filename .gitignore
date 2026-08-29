@@ -1,0 +1,28 @@
+# 环境与密钥
+.env
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv*/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+
+# 运行时数据（上传文件 / S3 下载缓存）
+storage/*
+!storage/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db

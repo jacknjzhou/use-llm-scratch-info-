@@ -1,0 +1,131 @@
+{
+  "version": "1.0",
+  "remark": "系统预置关键词模板（seed 数据），首次启动 alembic 迁移后自动写入 extract_schema 表，is_preset=true",
+  "templates": [
+    {
+      "name": "合同模板",
+      "category": "合同类",
+      "description": "通用商务合同关键信息提取",
+      "fields": [
+        {"key": "party_a", "label": "甲方名称", "type": "string", "desc": "合同中甲方（发包方/采购方）的全称"},
+        {"key": "party_b", "label": "乙方名称", "type": "string", "desc": "合同中乙方（承包方/供应方）的全称"},
+        {"key": "contract_amount", "label": "合同金额", "type": "number", "desc": "合同总价款，含税总金额，数值型"},
+        {"key": "sign_date", "label": "签订日期", "type": "date", "desc": "合同签署日期，YYYY-MM-DD"},
+        {"key": "term", "label": "合同期限", "type": "string", "desc": "履行期限或起止时间，如'2026-01-01至2026-12-31'"},
+        {"key": "payment_terms", "label": "付款方式", "type": "string", "desc": "付款条件与方式，如'分期付款、预付30%'"},
+        {"key": "contract_no", "label": "合同编号", "type": "string", "desc": "合同上的编号"}
+      ]
+    },
+    {
+      "name": "行程单模板",
+      "category": "出行票据类",
+      "description": "机票/火车票（含高铁票）行程单信息提取",
+      "fields": [
+        {"key": "passenger_name", "label": "乘客姓名", "type": "string", "desc": "乘车/乘机人姓名"},
+        {"key": "id_number", "label": "证件号（脱敏）", "type": "string", "desc": "身份证号，保留原样脱敏格式"},
+        {"key": "departure", "label": "出发地", "type": "string", "desc": "出发城市或车站/机场，如'北京南'、'首都机场T3'"},
+        {"key": "destination", "label": "到达地", "type": "string", "desc": "到达城市或车站/机场"},
+        {"key": "depart_date", "label": "出发日期", "type": "date", "desc": "出发日期，YYYY-MM-DD"},
+        {"key": "depart_time", "label": "出发时间", "type": "string", "desc": "发车/起飞时间，HH:MM"},
+        {"key": "arrive_time", "label": "到达时间", "type": "string", "desc": "到站/落地时间，HH:MM，票面无则填null"},
+        {"key": "vehicle_no", "label": "航班号/车次", "type": "string", "desc": "航班号，或高铁/火车车次（G/C/D/Z/T/K字头，如G101）"},
+        {"key": "seat_class", "label": "座位等级", "type": "string", "desc": "舱位/坐席，如经济舱、商务座、一等座、二等座、硬卧"},
+        {"key": "seat_no", "label": "车厢及座位号", "type": "string", "desc": "火车票车厢号+座位号，如'07车12F号'，机票无则填null"},
+        {"key": "fare", "label": "票价", "type": "number", "desc": "票面价格"},
+        {"key": "tax_fee", "label": "税费", "type": "number", "desc": "机场建设费/燃油费等税费，火车票无则填null"},
+        {"key": "ticket_type", "label": "票据类型", "type": "string", "desc": "航空/高铁/普速火车/其他"},
+        {"key": "ticket_no", "label": "票号", "type": "string", "desc": "电子客票号或订单号"}
+      ]
+    },
+    {
+      "name": "住宿单模板",
+      "category": "出行票据类",
+      "description": "酒店住宿账单/发票信息提取",
+      "fields": [
+        {"key": "hotel_name", "label": "酒店名称", "type": "string", "desc": "酒店或住宿机构全称"},
+        {"key": "guest_name", "label": "入住人", "type": "string", "desc": "登记入住的客人姓名"},
+        {"key": "checkin_date", "label": "入住日期", "type": "date", "desc": "入住日期，YYYY-MM-DD"},
+        {"key": "checkout_date", "label": "离店日期", "type": "date", "desc": "退房日期，YYYY-MM-DD"},
+        {"key": "room_count", "label": "房间数", "type": "number", "desc": "房间数量"},
+        {"key": "nights", "label": "晚数", "type": "number", "desc": "住宿晚数"},
+        {"key": "total_amount", "label": "住宿总金额", "type": "number", "desc": "房费总额，含服务费"},
+        {"key": "city", "label": "所在城市", "type": "string", "desc": "酒店所在城市"},
+        {"key": "invoice_no", "label": "发票号/流水号", "type": "string", "desc": "账单或发票编号"}
+      ]
+    },
+    {
+      "name": "订购单模板",
+      "category": "采购类",
+      "description": "采购订购单信息提取",
+      "fields": [
+        {"key": "order_no", "label": "订购单号", "type": "string", "desc": "订购单/订单编号"},
+        {"key": "supplier", "label": "供应商", "type": "string", "desc": "供应商或卖方名称"},
+        {"key": "buyer", "label": "订购方", "type": "string", "desc": "买方/采购方名称"},
+        {"key": "order_date", "label": "订购日期", "type": "date", "desc": "下单日期，YYYY-MM-DD"},
+        {"key": "items", "label": "商品明细", "type": "array", "desc": "商品名称+数量+单价列表"},
+        {"key": "total_amount", "label": "订单总金额", "type": "number", "desc": "订单含税总额"},
+        {"key": "delivery_date", "label": "交货日期", "type": "date", "desc": "约定交货/到货日期"},
+        {"key": "payment_terms", "label": "付款条款", "type": "string", "desc": "付款方式与账期"}
+      ]
+    },
+    {
+      "name": "餐饮流水单模板",
+      "category": "出行票据类",
+      "description": "餐饮消费小票/流水单信息提取",
+      "fields": [
+        {"key": "merchant_name", "label": "商户名称", "type": "string", "desc": "餐厅/商户名称"},
+        {"key": "consume_date", "label": "消费日期", "type": "date", "desc": "消费发生日期，YYYY-MM-DD"},
+        {"key": "consume_time", "label": "消费时间", "type": "string", "desc": "消费发生时间，HH:MM"},
+        {"key": "table_no", "label": "桌号/人数", "type": "string", "desc": "桌号或就餐人数"},
+        {"key": "items", "label": "菜品明细", "type": "array", "desc": "菜品名称+数量+金额列表"},
+        {"key": "total_amount", "label": "消费总金额", "type": "number", "desc": "实付总金额，含服务费"},
+        {"key": "payment_method", "label": "支付方式", "type": "string", "desc": "如微信、支付宝、银行卡"},
+        {"key": "order_no", "label": "流水号/单号", "type": "string", "desc": "小票上的流水号或订单号"}
+      ]
+    },
+    {
+      "name": "付款截图模板",
+      "category": "支付凭证类",
+      "description": "微信/支付宝/银行付款截图信息提取",
+      "fields": [
+        {"key": "payer", "label": "付款人", "type": "string", "desc": "付款方姓名或账户（脱敏部分保留原样）"},
+        {"key": "payee", "label": "收款人", "type": "string", "desc": "收款方姓名、商户或账户"},
+        {"key": "amount", "label": "付款金额", "type": "number", "desc": "实际支付金额"},
+        {"key": "pay_time", "label": "付款时间", "type": "string", "desc": "支付完成时间，YYYY-MM-DD HH:MM:SS"},
+        {"key": "transaction_no", "label": "交易单号", "type": "string", "desc": "交易流水号/转账单号"},
+        {"key": "channel", "label": "支付渠道", "type": "string", "desc": "微信支付/支付宝/银行转账等"},
+        {"key": "status", "label": "支付状态", "type": "string", "desc": "如支付成功、转账完成"},
+        {"key": "remark", "label": "备注", "type": "string", "desc": "转账备注或说明"}
+      ]
+    },
+    {
+      "name": "租赁合同模板",
+      "category": "合同类",
+      "description": "房屋/设备租赁合同信息提取",
+      "fields": [
+        {"key": "lessor", "label": "出租方", "type": "string", "desc": "出租方（甲方）全称"},
+        {"key": "lessee", "label": "承租方", "type": "string", "desc": "承租方（乙方）全称"},
+        {"key": "lease_object", "label": "租赁物", "type": "string", "desc": "租赁房屋地址或设备名称"},
+        {"key": "lease_start", "label": "租期开始", "type": "date", "desc": "租赁起始日期，YYYY-MM-DD"},
+        {"key": "lease_end", "label": "租期结束", "type": "date", "desc": "租赁结束日期，YYYY-MM-DD"},
+        {"key": "monthly_rent", "label": "月租金", "type": "number", "desc": "每期租金金额"},
+        {"key": "deposit", "label": "押金", "type": "number", "desc": "押金金额"},
+        {"key": "payment_cycle", "label": "付款周期", "type": "string", "desc": "如押一付三、按月支付"},
+        {"key": "contract_no", "label": "合同编号", "type": "string", "desc": "租赁合同编号"}
+      ]
+    },
+    {
+      "name": "补充说明模板",
+      "category": "合同类",
+      "description": "合同补充说明/补充协议信息提取",
+      "fields": [
+        {"key": "related_contract", "label": "关联主合同", "type": "string", "desc": "所补充的原合同名称或编号"},
+        {"key": "parties", "label": "签署方", "type": "array", "desc": "签署各方名称列表"},
+        {"key": "summary", "label": "补充内容摘要", "type": "string", "desc": "补充说明的核心内容概括，不超过100字"},
+        {"key": "changed_clauses", "label": "变更条款", "type": "array", "desc": "修改/新增/废除的原合同条款列表"},
+        {"key": "effective_date", "label": "生效日期", "type": "date", "desc": "补充说明生效日期，YYYY-MM-DD"},
+        {"key": "sign_date", "label": "签署日期", "type": "date", "desc": "签署日期，YYYY-MM-DD"}
+      ]
+    }
+  ]
+}
