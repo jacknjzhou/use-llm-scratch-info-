@@ -12,6 +12,7 @@ RUN pip install -r requirements.txt
 
 COPY app ./app
 COPY seeds ./seeds
-COPY alembic.ini migrations ./
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 EXPOSE 8000
