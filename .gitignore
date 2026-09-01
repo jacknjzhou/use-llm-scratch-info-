@@ -10,6 +10,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.trae/
 
 # Node
 node_modules/
