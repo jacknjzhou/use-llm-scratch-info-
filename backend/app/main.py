@@ -20,25 +20,30 @@ logger = logging.getLogger(__name__)
 
 
 async def seed_preset_templates():
-    """首次启动写入 8 套预置模板（幂等）。"""
+    """首次启动写入预置模板（幂等：新模板逐个检查追加）。"""
     from app.models import ExtractSchema
 
     seed_path = Path(__file__).resolve().parent.parent / "seeds" / "preset_templates.json"
     if not seed_path.exists():
         logger.warning("未找到预置模板文件: %s", seed_path)
         return
+    data = json.loads(seed_path.read_text(encoding="utf-8"))
     async with SessionLocal() as db:
-        existing = (await db.execute(
-            select(ExtractSchema).where(ExtractSchema.is_preset.is_(True)).limit(1))).scalar_one_or_none()
-        if existing:
-            return
-        data = json.loads(seed_path.read_text(encoding="utf-8"))
+        added = 0
         for tpl in data["templates"]:
+            # 逐个检查模板是否已存在
+            existing = (await db.execute(
+                select(ExtractSchema).where(ExtractSchema.name == tpl["name"])
+            )).scalar_one_or_none()
+            if existing:
+                continue
             db.add(ExtractSchema(
                 name=tpl["name"], category=tpl.get("category"),
                 description=tpl.get("description"), fields=tpl["fields"], is_preset=True))
+            added += 1
         await db.commit()
-        logger.info("已写入 %s 套预置模板", len(data["templates"]))
+        if added > 0:
+            logger.info("已新增 %s 套预置模板（当前共 %s 套）", added, len(data["templates"]))
 
 
 async def recover_stale_tasks():
