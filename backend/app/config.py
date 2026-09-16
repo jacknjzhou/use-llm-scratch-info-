@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     classify_max_chars: int = 5000           # 分类时最大字符数
     classify_sample_strategy: str = "head_middle_tail"  # 采样策略：head_middle_tail / content_rich / hybrid
 
+    # 阶段三：两阶段分类
+    classify_coarse_threshold: float = 0.3   # 粗筛置信度阈值（> 0.3 才进入精排）
+
+    # 阶段四：动态阈值 + 重试
+    match_dynamic_threshold: bool = True     # 启用动态阈值调整
+    match_max_retries: int = 2               # 最大重试次数
+    match_retry_delay: float = 1.0           # 重试间隔（秒）
+
+    # 阶段五：缓存配置
+    match_cache_enabled: bool = True         # 启用分类缓存
+    match_cache_max_size: int = 1000         # 缓存最大条目数
+    match_cache_ttl: int = 86400             # 缓存 TTL（秒）
+
     # 上传限制：单文件最大 MB 数
     upload_max_mb: int = 50
 

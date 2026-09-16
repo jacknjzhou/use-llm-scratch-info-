@@ -464,3 +464,415 @@ async def classify_file(file_row: UploadedFile, schemas: list[ExtractSchema],
         "confidence": float(data.get("confidence") or 0),
         "reason": data.get("reason"),
     }
+
+
+# ============================================================
+# 阶段三：两阶段分类（粗筛 + 精排）
+# ============================================================
+
+async def _coarse_classify(schemas: list[ExtractSchema], filename: str,
+                           text: str, llm_cfg: LlmConfig) -> list[dict]:
+    """
+    阶段一：粗筛 - 快速排除明显不匹配的模板。
+
+    使用轻量 Prompt，返回置信度 > 0.3 的候选模板（最多5个）。
+    """
+    template_list = "\n".join([
+        f"{i+1}. {s.name} (类别: {s.category or '未分类'})"
+        for i, s in enumerate(schemas)
+    ])
+
+    system = """你是一个文档分类助手。根据文件名和文档片段，快速判断该文档可能属于哪个模板类别。
+
+输出要求：严格输出 JSON 数组，格式如下：
+[
+  {"index": 1, "name": "模板名", "confidence": 0.0~1.0},
+  ...
+]
+- 返回置信度 > 0.3 的模板，最多返回 5 个
+- 如果所有模板都不匹配，返回空数组 []
+- 禁止编造，只输出你确定的判断"""
+
+    user = f"""文件名：{filename}
+
+文档片段：
+<<<
+{text[:3000]}
+>>>
+
+模板列表：
+{template_list}"""
+
+    try:
+        data = await chat_json(llm_cfg.base_url, decrypt_api_key(llm_cfg.api_key_enc),
+                               llm_cfg.model, system, user)
+        candidates = data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.warning("粗筛调用失败: %s", exc)
+        return []
+
+    # 映射到完整 schema
+    schema_map = {s.name: s for s in schemas}
+    results = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("template_name")
+        schema = schema_map.get(name)
+        if schema:
+            results.append({
+                "schema": schema,
+                "confidence": float(item.get("confidence", 0)),
+                "reason": f"粗筛匹配: {name}"
+            })
+
+    return sorted(results, key=lambda x: x["confidence"], reverse=True)[:5]
+
+
+async def _fine_classify(candidates: list[dict], filename: str,
+                         text: str, llm_cfg: LlmConfig,
+                         db: AsyncSession | None) -> dict:
+    """
+    阶段二：精排 - 详细分析候选模板。
+
+    使用增强 Prompt 输出最终匹配结果。
+    """
+    if not candidates:
+        return {"schema_id": None, "confidence": 0.0, "reason": "无候选模板"}
+
+    # 只有一个候选，直接返回（带微调置信度）
+    if len(candidates) == 1:
+        c = candidates[0]
+        return {
+            "schema_id": c["schema"].id,
+            "confidence": min(c["confidence"] * 1.05, 0.95),  # 轻微提升
+            "reason": c.get("reason", "唯一候选模板"),
+            "_candidates": candidates
+        }
+
+    # 多个候选，进行精排
+    candidate_detail = "\n".join([
+        f"- id: {c['schema'].id}\n  name: {c['schema'].name}\n  category: {c['schema'].category or ''}\n  description: {(c['schema'].description or '')[:200]}\n  key_fields: {json.dumps([{'key': f.get('key', ''), 'label': f.get('label', ''), 'type': f.get('type', 'string')} for f in (c['schema'].fields or [])[:3]], ensure_ascii=False)}"
+        for c in candidates
+    ])
+
+    # 获取 few-shot 示例
+    few_shot = ""
+    if db:
+        few_shot = await load_classification_examples(
+            db, [c["schema"] for c in candidates], limit=3
+        )
+
+    system = f"""你是专业的文档分类专家。根据给定的文档片段，从候选模板中选择最匹配的一个。
+
+分类原则：
+1. 仔细比对文档中的关键字段/特征词与模板字段定义的匹配度
+2. 关注文档的结构特征（合同条款格式、发票格式、表格结构等）
+3. 优先选择特征词匹配最多的模板
+4. 如果候选模板都很接近，选择置信度最高的那个
+
+{few_shot}
+
+输出要求：严格输出 JSON 对象：
+{{"schema_id": "模板UUID字符串", "confidence": 0.0~1.0, "reason": "详细判断理由（20字以上）", "matching_features": ["匹配特征1", "匹配特征2"]}}"""
+
+    user = f"""候选模板详情：
+{candidate_detail}
+
+文件名：{filename}
+
+文档片段：
+<<<
+{text}
+>>>"""
+
+    try:
+        data = await chat_json(llm_cfg.base_url, decrypt_api_key(llm_cfg.api_key_enc),
+                               llm_cfg.model, system, user)
+    except Exception as exc:
+        logger.warning("精排调用失败: %s", exc)
+        # 回退到粗筛结果
+        top = max(candidates, key=lambda x: x["confidence"])
+        return {
+            "schema_id": top["schema"].id,
+            "confidence": top["confidence"] * 0.8,  # 降权
+            "reason": f"精排失败，使用粗筛结果: {top.get('reason', '')}",
+            "_candidates": candidates
+        }
+
+    schema_id = data.get("schema_id")
+    if schema_id:
+        try:
+            schema_id = uuid.UUID(str(schema_id))
+        except ValueError:
+            schema_id = None
+            # 尝试通过名称匹配
+            schema_name = data.get("schema_name", "")
+            for c in candidates:
+                if c["schema"].name == schema_name:
+                    schema_id = c["schema"].id
+                    break
+
+    return {
+        "schema_id": schema_id,
+        "confidence": float(data.get("confidence") or 0),
+        "reason": data.get("reason"),
+        "matching_features": data.get("matching_features", []),
+        "_candidates": candidates
+    }
+
+
+async def classify_file_two_stage(file_row: UploadedFile, schemas: list[ExtractSchema],
+                                   llm_cfg: LlmConfig, db: AsyncSession) -> dict:
+    """
+    两阶段分类入口：粗筛 + 精排。
+
+    适用于模板数量较多（>10个）的场景。
+    """
+    # 1. 多页采样
+    sampled_text = ""
+    try:
+        local_path = get_storage().resolve(file_row.storage_path)
+        chunks = parse_file(local_path, max_pages=settings.classify_max_pages)
+        sampled_text = sample_text_from_chunks(chunks)
+    except Exception as exc:
+        logger.warning("分类前解析失败 %s: %s", file_row.filename, exc)
+        return {"schema_id": None, "confidence": 0.0, "reason": f"文档解析失败: {exc}"}
+
+    if not sampled_text:
+        return {"schema_id": None, "confidence": 0.0, "reason": "文档解析为空"}
+
+    # 2. 阶段一：粗筛（模板数量 > 5 时启用）
+    if len(schemas) > 5:
+        coarse_candidates = await _coarse_classify(
+            schemas, file_row.filename, sampled_text, llm_cfg
+        )
+        if not coarse_candidates:
+            logger.info("粗筛无候选模板: %s", file_row.filename)
+            return {"schema_id": None, "confidence": 0.0, "reason": "粗筛无候选模板"}
+    else:
+        # 模板较少时，跳过粗筛
+        coarse_candidates = [{"schema": s, "confidence": 0.5} for s in schemas]
+
+    # 3. 阶段二：精排
+    return await _fine_classify(
+        coarse_candidates, file_row.filename, sampled_text, llm_cfg, db
+    )
+
+
+# ============================================================
+# 阶段四：动态阈值 + 回退机制
+# ============================================================
+
+def calculate_dynamic_threshold(candidates: list[dict], base_threshold: float = 0.8) -> tuple[float, str]:
+    """
+    根据候选模板的分布动态调整阈值。
+
+    Args:
+        candidates: 候选模板列表
+        base_threshold: 基础阈值
+
+    Returns:
+        (threshold, strategy): 调整后的阈值和策略描述
+    """
+    if not candidates:
+        return 0.5, "无候选，使用默认阈值"
+
+    if len(candidates) == 1:
+        # 单一候选，降低阈值提高自动绑定率
+        return base_threshold * 0.9, "单一候选，降低阈值"
+
+    top_conf = candidates[0].get("confidence", 0)
+    second_conf = candidates[1].get("confidence", 0) if len(candidates) > 1 else 0
+    gap = top_conf - second_conf
+
+    if gap > 0.3:
+        # 第一名明显领先，提高阈值避免误匹配
+        threshold = min(base_threshold * 1.1, 0.95)
+        strategy = "候选差距大，提高阈值"
+    elif gap < 0.1:
+        # 候选接近，降低阈值倾向保守
+        threshold = base_threshold * 0.85
+        strategy = "候选差距小，降低阈值"
+    else:
+        threshold = base_threshold
+        strategy = "候选差距适中，使用默认阈值"
+
+    return threshold, strategy
+
+
+async def classify_with_fallback(file_row: UploadedFile, schemas: list[ExtractSchema],
+                                 llm_cfg: LlmConfig, db: AsyncSession) -> dict:
+    """
+    带重试和回退的分类。
+
+    流程：
+    1. 尝试两阶段分类
+    2. 动态阈值判断
+    3. 失败时重试（最多2次）
+    4. 所有失败回退到 need_confirm
+    """
+    max_retries = settings.match_max_retries
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            # 使用两阶段分类
+            result = await classify_file_two_stage(file_row, schemas, llm_cfg, db)
+
+            # 动态阈值判断
+            candidates = result.get("_candidates", [])
+            threshold, strategy = calculate_dynamic_threshold(candidates)
+            confidence = result["confidence"]
+            result["threshold_strategy"] = strategy
+
+            # 根据动态阈值确定最终状态
+            if result["schema_id"] is None or confidence < 0.3:
+                result["match_status"] = "unmatched"
+            elif confidence < threshold:
+                result["match_status"] = "need_confirm"
+            else:
+                result["match_status"] = "bound"
+
+            return result
+
+        except Exception as exc:
+            last_error = exc
+            logger.warning("分类尝试 %s 失败: %s", attempt + 1, exc)
+
+            if attempt < max_retries - 1:
+                await asyncio.sleep(settings.match_retry_delay)
+                continue
+
+    # 所有重试都失败，返回 need_confirm 而非 unmatched
+    return {
+        "schema_id": None,
+        "confidence": 0,
+        "reason": f"分类服务异常: {last_error}",
+        "match_status": "need_confirm",  # 回退到需要确认
+        "threshold_strategy": "重试失败，使用默认状态"
+    }
+
+
+# ============================================================
+# 阶段五：历史缓存 + 批量优化
+# ============================================================
+
+class MatchCache:
+    """分类结果内存缓存（进程内）。"""
+
+    def __init__(self, max_size: int = 1000, ttl_seconds: int = 86400):
+        self._cache: dict[str, dict] = {}
+        self._timestamps: dict[str, float] = {}
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+
+    def _make_key(self, filename: str, file_hash: str | None = None) -> str:
+        """生成缓存键（标准化文件名）。"""
+        import re
+        normalized = re.sub(r'\d{4,}', 'N', filename)  # 替换连续数字
+        normalized = re.sub(r'V\d+', 'V', normalized)   # 替换版本号
+        key = f"{normalized}:{file_hash or 'unknown'}"
+        return key
+
+    def get(self, filename: str, file_hash: str | None = None) -> dict | None:
+        """获取缓存的分类结果。"""
+        key = self._make_key(filename, file_hash)
+
+        if key in self._timestamps:
+            if __import__('time').time() - self._timestamps[key] > self.ttl_seconds:
+                del self._cache[key]
+                del self._timestamps[key]
+                return None
+
+        return self._cache.get(key)
+
+    def set(self, filename: str, file_hash: str | None, result: dict):
+        """缓存分类结果。"""
+        key = self._make_key(filename, file_hash)
+
+        # LRU 淘汰
+        if len(self._cache) >= self.max_size and key not in self._cache:
+            oldest_key = min(self._timestamps, key=self._timestamps.get)
+            del self._cache[oldest_key]
+            del self._timestamps[oldest_key]
+
+        self._cache[key] = result
+        self._timestamps[key] = __import__('time').time()
+
+    def clear(self):
+        """清空缓存。"""
+        self._cache.clear()
+        self._timestamps.clear()
+
+
+# 全局缓存实例
+_match_cache = MatchCache()
+
+
+def normalize_filename(filename: str) -> str:
+    """标准化文件名用于相似度比较。"""
+    import re
+    normalized = re.sub(r'\d{4,}', 'N', filename)
+    normalized = re.sub(r'V\d+', 'V', normalized)
+    normalized = re.sub(r'[_\-\s]+', '', normalized).lower()
+    return normalized
+
+
+def calculate_filename_similarity(s1: str, s2: str) -> float:
+    """计算文件名相似度（字符重叠率）。"""
+    set1, set2 = set(s1), set(s2)
+    if not set1 or not set2:
+        return 0.0
+    overlap = len(set1 & set2)
+    return overlap / max(len(set1), len(set2))
+
+
+async def classify_file_with_cache(file_row: UploadedFile, schemas: list[ExtractSchema],
+                                   llm_cfg: LlmConfig, db: AsyncSession,
+                                   file_hash: str | None = None) -> dict:
+    """
+    带缓存的分类。
+
+    - 优先从缓存获取
+    - 缓存未命中时执行实际分类
+    - 仅缓存高置信度（>=0.7）的结果
+    """
+    # 尝试从缓存获取
+    cached = _match_cache.get(file_row.filename, file_hash)
+    if cached:
+        logger.info("分类缓存命中: %s", file_row.filename)
+        return {**cached, "from_cache": True}
+
+    # 执行实际分类
+    result = await classify_with_fallback(file_row, schemas, llm_cfg, db)
+
+    # 缓存高置信度结果
+    if result.get("confidence", 0) >= 0.7 and result.get("schema_id"):
+        _match_cache.set(file_row.filename, file_hash, result)
+
+    return {**result, "from_cache": False}
+
+
+# ============================================================
+# 最终入口：统一使用增强版分类
+# ============================================================
+
+async def classify_file(file_row: UploadedFile, schemas: list[ExtractSchema],
+                        llm_cfg: LlmConfig, db: AsyncSession | None = None) -> dict:
+    """
+    智能匹配入口函数（最终版）。
+
+    使用完整增强流程：
+    - 两阶段分类（模板 > 5 时）
+    - 动态阈值
+    - 历史缓存
+    - 重试回退
+    """
+    if db is not None and settings.match_cache_enabled:
+        return await classify_file_with_cache(file_row, schemas, llm_cfg, db)
+    elif db is not None:
+        return await classify_with_fallback(file_row, schemas, llm_cfg, db)
+    else:
+        # 无 db 时使用简化版
+        return await classify_file_v2(file_row, schemas, llm_cfg, db)
