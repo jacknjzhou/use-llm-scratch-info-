@@ -143,42 +143,6 @@ async def extract_file(task_id, file_row: UploadedFile, schema: ExtractSchema,
     return {"coverage": coverage, "chunks": len(chunks), "failed_chunks": errors}
 
 
-async def classify_file(file_row: UploadedFile, schemas: list[ExtractSchema],
-                        llm_cfg: LlmConfig) -> dict:
-    """智能匹配：只解析前两页文本（避免整本扫描件 OCR），判断归属模板。
-
-    返回 {schema_id, confidence, reason}。
-    """
-    head_text = ""
-    try:
-        local_path = get_storage().resolve(file_row.storage_path)
-        chunks = parse_file(local_path, max_pages=2)
-        head_text = "\n".join(c["text"] for c in chunks[:2])[:3000]
-    except Exception as exc:
-        logger.warning("分类前解析失败 %s: %s", file_row.filename, exc)
-
-    candidates = "\n".join(
-        f"- id: {s.id}\n  name: {s.name}\n  category: {s.category or ''}\n  description: {s.description or ''}"
-        for s in schemas)
-    system = (
-        "你是文件类型分类器。根据给定的文件名和文本片段，判断该文件最符合哪个模板类别。\n"
-        "只输出 JSON：{\"schema_id\": \"...\", \"confidence\": 0~1, \"reason\": \"一句话理由\"}\n"
-        "若都不匹配，schema_id 填 null。禁止编造。")
-    user = f"候选模板：\n{candidates}\n\n文件名：{file_row.filename}\n\n文件片段：\n<<<\n{head_text}\n>>>"
-
-    data = await chat_json(llm_cfg.base_url, decrypt_api_key(llm_cfg.api_key_enc),
-                           llm_cfg.model, system, user)
-    schema_id = data.get("schema_id")
-    if schema_id:
-        try:
-            schema_id = uuid.UUID(str(schema_id))
-        except ValueError:
-            schema_id = None
-    return {
-        "schema_id": schema_id,
-        "confidence": float(data.get("confidence") or 0),
-        "reason": data.get("reason"),
-    }
 
 
 async def get_default_llm_config(db: AsyncSession, config_id=None) -> LlmConfig:
@@ -354,7 +318,7 @@ async def classify_file_v2(file_row: UploadedFile, schemas: list[ExtractSchema],
     for s in schemas:
         key_fields = [
             {"key": f.get("key", ""), "label": f.get("label", ""), "type": f.get("type", "string")}
-            for f in (s.fields or [])[:5]  # 取前5个关键字段
+            for f in (s.fields or [])[:8]  # 取前5个关键字段
         ]
         candidates.append({
             "id": str(s.id),
@@ -371,9 +335,9 @@ async def classify_file_v2(file_row: UploadedFile, schemas: list[ExtractSchema],
     system = f"""你是专业的文档分类专家。根据给定的文档片段，判断其最符合哪个模板类别。
 
 分类原则：
-1. 优先依据文档中的关键字段/特征词判断（如合同编号、发票号码、金额格式、日期格式）
+1. 优先依据文档中的关键字段/特征词判断（如文件内容、合同、行程单、发票号码、采购、发票、住宿），锁定关键信息
 2. 参考模板的字段定义，匹配度最高的优先
-3. 注意文档的结构特征（合同条款、表格格式、标题层级等）
+3. 注意文档的结构特征（合同条款、标题层级等）
 4. 若文档片段不足以判断，confidence 设为较低值而非返回 null
 
 {few_shot}
@@ -382,7 +346,7 @@ async def classify_file_v2(file_row: UploadedFile, schemas: list[ExtractSchema],
 {{
   "schema_id": "匹配的模板UUID字符串，未找到填 null",
   "confidence": 0.0~1.0,
-  "reason": "详细判断理由（20字以上）",
+  "reason": "详细判断理由（50字以上,100字内）",
   "matching_features": ["匹配到的特征1", "匹配到的特征2"]
 }}"""
 
@@ -410,59 +374,29 @@ async def classify_file_v2(file_row: UploadedFile, schemas: list[ExtractSchema],
             schema_id = None
             logger.warning("LLM 返回的 schema_id 格式无效: %s", data.get("schema_id"))
 
+    # 通过 schema_name 查找真实 UUID（避免 LLM 编造 UUID）
+    schema_name = data.get("schema_name", "")
+    matched_schema_name = None
+    if schema_id is None and schema_name:
+        for s in schemas:
+            if s.name == schema_name:
+                schema_id = s.id
+                matched_schema_name = s.name
+                break
+    
+    # 如果通过 UUID 找到了 schema，获取其名称
+    if matched_schema_name is None and schema_id:
+        for s in schemas:
+            if s.id == schema_id:
+                matched_schema_name = s.name
+                break
+
     return {
         "schema_id": schema_id,
-        "confidence": float(data.get("confidence") or 0),
-        "reason": data.get("reason"),
-        "matching_features": data.get("matching_features", [])
-    }
-
-
-# ============================================================
-# 兼容层：默认使用增强版分类
-# ============================================================
-
-async def classify_file(file_row: UploadedFile, schemas: list[ExtractSchema],
-                        llm_cfg: LlmConfig, db: AsyncSession | None = None) -> dict:
-    """
-    智能匹配入口函数。
-
-    - 若 db 不为 None，使用增强版（classify_file_v2）
-    - 否则使用原版（保持向后兼容）
-    """
-    if db is not None:
-        return await classify_file_v2(file_row, schemas, llm_cfg, db)
-
-    # 原版实现（保持向后兼容）
-    head_text = ""
-    try:
-        local_path = get_storage().resolve(file_row.storage_path)
-        chunks = parse_file(local_path, max_pages=2)
-        head_text = "\n".join(c["text"] for c in chunks[:2])[:3000]
-    except Exception as exc:
-        logger.warning("分类前解析失败 %s: %s", file_row.filename, exc)
-
-    candidates = "\n".join(
-        f"- id: {s.id}\n  name: {s.name}\n  category: {s.category or ''}\n  description: {s.description or ''}"
-        for s in schemas)
-    system = (
-        "你是文件类型分类器。根据给定的文件名和文本片段，判断该文件最符合哪个模板类别。\n"
-        "只输出 JSON：{{\"schema_id\": \"...\", \"confidence\": 0~1, \"reason\": \"一句话理由\"}}\n"
-        "若都不匹配，schema_id 填 null。禁止编造。")
-    user = f"候选模板：\n{candidates}\n\n文件名：{file_row.filename}\n\n文件片段：\n<<<\n{head_text}\n>>>"
-
-    data = await chat_json(llm_cfg.base_url, decrypt_api_key(llm_cfg.api_key_enc),
-                           llm_cfg.model, system, user)
-    schema_id = data.get("schema_id")
-    if schema_id:
-        try:
-            schema_id = uuid.UUID(str(schema_id))
-        except ValueError:
-            schema_id = None
-    return {
-        "schema_id": schema_id,
-        "confidence": float(data.get("confidence") or 0),
-        "reason": data.get("reason"),
+        "schema_name": matched_schema_name,
+        "confidence": float(data.get("confidence") or 0) if data.get("confidence") is not None else 0.5,
+        "reason": data.get("reason") or "分类完成",
+        "matching_features": data.get("matching_features") or []
     }
 
 
@@ -490,7 +424,7 @@ async def _coarse_classify(schemas: list[ExtractSchema], filename: str,
   ...
 ]
 - 返回置信度 > 0.3 的模板，最多返回 5 个
-- 如果所有模板都不匹配，返回空数组 []
+- 如果所有模板都不匹配，则返回置信度最高的一个，否则返回空数组 []
 - 禁止编造，只输出你确定的判断"""
 
     user = f"""文件名：{filename}
@@ -538,7 +472,7 @@ async def _fine_classify(candidates: list[dict], filename: str,
     使用增强 Prompt 输出最终匹配结果。
     """
     if not candidates:
-        return {"schema_id": None, "confidence": 0.0, "reason": "无候选模板"}
+        return {"schema_id": None, "confidence": 0.0, "reason": "无候选模板", "_candidates": [], "matching_features": []}
 
     # 只有一个候选，直接返回（带微调置信度）
     if len(candidates) == 1:
@@ -574,7 +508,7 @@ async def _fine_classify(candidates: list[dict], filename: str,
 {few_shot}
 
 输出要求：严格输出 JSON 对象：
-{{"schema_id": "模板UUID字符串", "confidence": 0.0~1.0, "reason": "详细判断理由（20字以上）", "matching_features": ["匹配特征1", "匹配特征2"]}}"""
+{{"schema_name": "模板名称（如：普通发票）", "confidence": 0.0~1.0, "reason": "详细判断理由（20字以上）", "matching_features": ["匹配特征1", "匹配特征2"]}}"""
 
     user = f"""候选模板详情：
 {candidate_detail}
@@ -600,24 +534,33 @@ async def _fine_classify(candidates: list[dict], filename: str,
             "_candidates": candidates
         }
 
-    schema_id = data.get("schema_id")
-    if schema_id:
-        try:
-            schema_id = uuid.UUID(str(schema_id))
-        except ValueError:
-            schema_id = None
-            # 尝试通过名称匹配
-            schema_name = data.get("schema_name", "")
-            for c in candidates:
-                if c["schema"].name == schema_name:
-                    schema_id = c["schema"].id
-                    break
+    # 通过 schema_name 查找真实 UUID（避免 LLM 编造 UUID）
+    schema_id = None
+    schema_name = data.get("schema_name", "")
+    for c in candidates:
+        if c["schema"].name == schema_name:
+            schema_id = c["schema"].id
+            break
+    
+    # 如果名称匹配失败，尝试置信度最高的候选
+    if schema_id is None and candidates:
+        logger.warning("精筛无法通过名称匹配 schema_name=%s，使用置信度最高的候选", schema_name)
+        schema_id = candidates[0]["schema"].id
 
+    # 获取匹配的模板名称
+    matched_schema_name = None
+    if schema_id:
+        for c in candidates:
+            if c["schema"].id == schema_id:
+                matched_schema_name = c["schema"].name
+                break
+    
     return {
         "schema_id": schema_id,
-        "confidence": float(data.get("confidence") or 0),
-        "reason": data.get("reason"),
-        "matching_features": data.get("matching_features", []),
+        "schema_name": matched_schema_name,
+        "confidence": float(data.get("confidence") or 0) if data.get("confidence") is not None else 0.5,
+        "reason": data.get("reason") or "精排完成",
+        "matching_features": data.get("matching_features") or [],
         "_candidates": candidates
     }
 
@@ -640,7 +583,7 @@ async def classify_file_two_stage(file_row: UploadedFile, schemas: list[ExtractS
         return {"schema_id": None, "confidence": 0.0, "reason": f"文档解析失败: {exc}"}
 
     if not sampled_text:
-        return {"schema_id": None, "confidence": 0.0, "reason": "文档解析为空"}
+        return {"schema_id": None, "confidence": 0.0, "reason": "文档解析为空", "_candidates": [], "matching_features": []}
 
     # 2. 阶段一：粗筛（模板数量 > 5 时启用）
     if len(schemas) > 5:
@@ -648,16 +591,21 @@ async def classify_file_two_stage(file_row: UploadedFile, schemas: list[ExtractS
             schemas, file_row.filename, sampled_text, llm_cfg
         )
         if not coarse_candidates:
-            logger.info("粗筛无候选模板: %s", file_row.filename)
-            return {"schema_id": None, "confidence": 0.0, "reason": "粗筛无候选模板"}
+            # 粗筛无候选时，使用所有模板作为候选继续精排（避免漏掉）
+            logger.warning("粗筛无候选模板，降级使用全部模板: %s", file_row.filename)
+            coarse_candidates = [{"schema": s, "confidence": 0.5} for s in schemas]
     else:
         # 模板较少时，跳过粗筛
         coarse_candidates = [{"schema": s, "confidence": 0.5} for s in schemas]
 
     # 3. 阶段二：精排
-    return await _fine_classify(
+    result = await _fine_classify(
         coarse_candidates, file_row.filename, sampled_text, llm_cfg, db
     )
+    # 确保返回结果包含 _candidates
+    if "_candidates" not in result:
+        result["_candidates"] = coarse_candidates
+    return result
 
 
 # ============================================================
@@ -747,10 +695,12 @@ async def classify_with_fallback(file_row: UploadedFile, schemas: list[ExtractSc
     # 所有重试都失败，返回 need_confirm 而非 unmatched
     return {
         "schema_id": None,
-        "confidence": 0,
+        "confidence": 0.0,
         "reason": f"分类服务异常: {last_error}",
-        "match_status": "need_confirm",  # 回退到需要确认
-        "threshold_strategy": "重试失败，使用默认状态"
+        "match_status": "need_confirm",
+        "threshold_strategy": "重试失败，使用默认状态",
+        "_candidates": [],  # 确保有 _candidates 字段
+        "matching_features": []
     }
 
 
@@ -869,10 +819,36 @@ async def classify_file(file_row: UploadedFile, schemas: list[ExtractSchema],
     - 历史缓存
     - 重试回退
     """
-    if db is not None and settings.match_cache_enabled:
-        return await classify_file_with_cache(file_row, schemas, llm_cfg, db)
-    elif db is not None:
-        return await classify_with_fallback(file_row, schemas, llm_cfg, db)
-    else:
-        # 无 db 时使用简化版
-        return await classify_file_v2(file_row, schemas, llm_cfg, db)
+    logger.info(f"[分类开始] 文件: {file_row.filename}, 模板数: {len(schemas)}")
+    try:
+        if db is not None and settings.match_cache_enabled:
+            result = await classify_file_with_cache(file_row, schemas, llm_cfg, db)
+        elif db is not None:
+            result = await classify_with_fallback(file_row, schemas, llm_cfg, db)
+        else:
+            result = await classify_file_v2(file_row, schemas, llm_cfg, db)
+        # 日志输出时处理 UUID 序列化问题
+        # log_result = {
+        #     k: str(v) if isinstance(v, uuid.UUID) else v
+        #     for k, v in result.items()
+        # }
+        # logger.info(f"Classify Info:{json.dumps(log_result)}")
+        # 确保返回结果完整
+        result.setdefault("_candidates", [])
+        result.setdefault("matching_features", [])
+        result.setdefault("reason", "分类完成")
+        
+        logger.info(f"[分类完成] 文件: {file_row.filename}, schema_id: {result.get('schema_id')}, "
+                   f"confidence: {result.get('confidence')}, reason: {str(result.get('reason', ''))[:50]}")
+        return result
+        
+    except Exception as exc:
+        logger.error("分类入口异常: %s", exc)
+        return {
+            "schema_id": None,
+            "confidence": 0.0,
+            "reason": f"分类异常: {str(exc)[:100]}",
+            "match_status": "need_confirm",
+            "_candidates": [],
+            "matching_features": []
+        }

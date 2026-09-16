@@ -76,6 +76,13 @@ async def _run(task_id: str, only_file_id: str | None = None) -> None:
                     tf.match_confidence = match["confidence"]
                     tf.match_reason = match["reason"]
                     sid = match["schema_id"]
+                    
+                    # 验证 schema_id 是否存在（防止 LLM 编造 UUID）
+                    schema_ids = {s.id for s in schemas}
+                    if sid is not None and sid not in schema_ids:
+                        logger.warning("LLM 返回了不存在的 schema_id: %s，使用 None 替代", sid)
+                        sid = None
+                    
                     tf.matched_schema_id = sid
                     if sid is None or match["confidence"] < settings.match_confirm_threshold:
                         tf.match_status = "unmatched"

@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     match_confirm_threshold: float = 0.5
 
     # 智能匹配参数（阶段一/二）
-    classify_max_pages: int = 3              # 分类时最多采样页数
+    classify_max_pages: int = 9              # 分类时最多采样页数
     classify_max_chars: int = 5000           # 分类时最大字符数
     classify_sample_strategy: str = "head_middle_tail"  # 采样策略：head_middle_tail / content_rich / hybrid
 
@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     match_retry_delay: float = 1.0           # 重试间隔（秒）
 
     # 阶段五：缓存配置
-    match_cache_enabled: bool = True         # 启用分类缓存
+    match_cache_enabled: bool = True          # 启用分类缓存 True / False
     match_cache_max_size: int = 1000         # 缓存最大条目数
     match_cache_ttl: int = 86400             # 缓存 TTL（秒）
 
