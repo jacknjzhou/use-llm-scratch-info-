@@ -67,7 +67,7 @@ async def _run(task_id: str, only_file_id: str | None = None) -> None:
                     file_row = (await db.execute(
                         select(UploadedFile).where(UploadedFile.id == tf.file_id))).scalar_one()
                     try:
-                        match = await classify_file(file_row, schemas, llm_cfg)
+                        match = await classify_file(file_row, schemas, llm_cfg, db)
                     except Exception as exc:
                         logger.warning("分类失败 %s: %s", tf.file_id, exc)
                         tf.match_status, tf.match_reason = "unmatched", f"分类调用失败: {exc}"

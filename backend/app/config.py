@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     match_auto_threshold: float = 0.8
     match_confirm_threshold: float = 0.5
 
+    # 智能匹配参数（阶段一/二）
+    classify_max_pages: int = 3              # 分类时最多采样页数
+    classify_max_chars: int = 5000           # 分类时最大字符数
+    classify_sample_strategy: str = "head_middle_tail"  # 采样策略：head_middle_tail / content_rich / hybrid
+
     # 上传限制：单文件最大 MB 数
     upload_max_mb: int = 50
 

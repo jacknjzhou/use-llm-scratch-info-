@@ -1,6 +1,7 @@
 """提取核心：智能模板匹配 + chunk 并发提取 + 结果合并。"""
 import asyncio
 import logging
+import json
 import uuid
 
 from sqlalchemy import select
@@ -211,3 +212,255 @@ async def recompute_task_status(db: AsyncSession, task: ExtractTask) -> None:
         task.status = "failed"
     else:
         task.status = "partially_succeeded"
+
+
+
+# ============================================================
+# 阶段一/二增强：智能多页采样 + 增强 Prompt 分类
+# ============================================================
+
+def sample_text_from_chunks(chunks: list[dict], max_chars: int | None = None,
+                            strategy: str | None = None) -> str:
+    """
+    从分块中智能采样文本用于分类。
+
+    Args:
+        chunks: parse_file 返回的分块列表
+        max_chars: 最大字符数（默认使用配置）
+        strategy: 采样策略（默认使用配置）
+            - "head_middle_tail": 前中后各取一段
+            - "content_rich": 优先选取内容密集的分块
+            - "hybrid": 结合两种策略
+
+    Returns:
+        采样后的文本
+    """
+    if not chunks:
+        return ""
+
+    max_chars = max_chars or settings.classify_max_chars
+    strategy = strategy or settings.classify_sample_strategy
+    total_pages = max((c.get("page", 1) for c in chunks), default=1)
+
+    if strategy == "head_middle_tail":
+        samples = []
+        # 头部：前2页
+        head_chunks = [c for c in chunks if c.get("page", 1) <= 2]
+        for c in head_chunks:
+            if sum(len(s) for s in samples) + len(c["text"]) <= max_chars // 3:
+                samples.append(c["text"])
+
+        # 中部：中间位置
+        if total_pages > 4:
+            mid_page = max(2, total_pages // 2)
+            mid_chunks = [c for c in chunks if abs(c.get("page", 1) - mid_page) <= 1]
+            for c in mid_chunks[:2]:
+                if sum(len(s) for s in samples) + len(c["text"]) <= max_chars // 3:
+                    samples.append(c["text"])
+
+        # 尾部：最后1页
+        tail_chunks = [c for c in chunks if c.get("page", 1) >= total_pages - 1]
+        for c in tail_chunks[:2]:
+            if sum(len(s) for s in samples) + len(c["text"]) <= max_chars // 3:
+                samples.append(c["text"])
+
+        return "\n...\n".join(samples)
+
+    elif strategy == "content_rich":
+        sorted_chunks = sorted(chunks, key=lambda c: len(c.get("text", "")), reverse=True)
+        samples = []
+        for c in sorted_chunks:
+            text = c.get("text", "")
+            if sum(len(s) for s in samples) + len(text) <= max_chars:
+                samples.append(text)
+            if sum(len(s) for s in samples) >= max_chars * 0.9:
+                break
+        return "\n".join(samples)
+
+    else:  # hybrid
+        samples = []
+        head_text = "\n".join(c["text"] for c in chunks if c.get("page", 1) <= 2)
+        samples.append(head_text)
+
+        if len(chunks) > 4:
+            sorted_by_len = sorted(chunks[4:], key=lambda c: len(c.get("text", "")), reverse=True)
+            if sorted_by_len:
+                rich_text = sorted_by_len[0].get("text", "")
+                if len("\n".join(samples)) + len(rich_text) <= max_chars:
+                    samples.append(f"[中间关键页]\n{rich_text}")
+
+        return "\n...\n".join(samples)
+
+
+async def load_classification_examples(db: AsyncSession, schemas: list[ExtractSchema],
+                                       limit: int = 5) -> str:
+    """加载历史成功分类案例作为 few-shot 示例。"""
+    if not schemas:
+        return ""
+
+    schema_ids = [s.id for s in schemas]
+    rows = (await db.execute(
+        select(TaskFile)
+        .where(TaskFile.matched_schema_id.in_(schema_ids))
+        .where(TaskFile.match_status.in_(["bound", "need_confirm"]))
+        .where(TaskFile.match_confidence >= 0.7)
+        .order_by(TaskFile.task_id.desc())
+        .limit(limit)
+    )).scalars().all()
+
+    if not rows:
+        return ""
+
+    file_ids = [r.file_id for r in rows]
+    files = (await db.execute(
+        select(UploadedFile).where(UploadedFile.id.in_(file_ids))
+    )).scalars().all()
+    file_map = {f.id: f for f in files}
+
+    schema_map = {s.id: s for s in schemas}
+    examples = ["参考以下历史分类案例："]
+    for r in rows:
+        f = file_map.get(r.file_id)
+        s = schema_map.get(r.matched_schema_id)
+        if f and s:
+            examples.append(
+                f"- 文件「{f.filename}」→ 模板「{s.name}」(置信度: {r.match_confidence:.2f})"
+            )
+
+    return "\n".join(examples) + "\n"
+
+
+async def classify_file_v2(file_row: UploadedFile, schemas: list[ExtractSchema],
+                           llm_cfg: LlmConfig, db: AsyncSession) -> dict:
+    """
+    增强版智能匹配：多页采样 + 增强 Prompt + 历史示例。
+
+    返回 {schema_id, confidence, reason, matching_features}。
+    """
+    # 1. 多页采样
+    sampled_text = ""
+    try:
+        local_path = get_storage().resolve(file_row.storage_path)
+        chunks = parse_file(local_path, max_pages=settings.classify_max_pages)
+        sampled_text = sample_text_from_chunks(chunks)
+    except Exception as exc:
+        logger.warning("分类前解析失败 %s: %s", file_row.filename, exc)
+
+    if not sampled_text:
+        return {"schema_id": None, "confidence": 0.0, "reason": "文档解析失败，无法分类"}
+
+    # 2. 构建增强的候选模板信息（包含关键字段）
+    candidates = []
+    for s in schemas:
+        key_fields = [
+            {"key": f.get("key", ""), "label": f.get("label", ""), "type": f.get("type", "string")}
+            for f in (s.fields or [])[:5]  # 取前5个关键字段
+        ]
+        candidates.append({
+            "id": str(s.id),
+            "name": s.name,
+            "category": s.category or "未分类",
+            "description": (s.description or "")[:200],  # 限制描述长度
+            "key_fields": key_fields
+        })
+
+    # 3. 获取历史分类示例
+    few_shot = await load_classification_examples(db, schemas, limit=5)
+
+    # 4. 增强的系统 Prompt
+    system = f"""你是专业的文档分类专家。根据给定的文档片段，判断其最符合哪个模板类别。
+
+分类原则：
+1. 优先依据文档中的关键字段/特征词判断（如合同编号、发票号码、金额格式、日期格式）
+2. 参考模板的字段定义，匹配度最高的优先
+3. 注意文档的结构特征（合同条款、表格格式、标题层级等）
+4. 若文档片段不足以判断，confidence 设为较低值而非返回 null
+
+{few_shot}
+
+输出要求：严格输出 JSON，格式如下：
+{{
+  "schema_id": "匹配的模板UUID字符串，未找到填 null",
+  "confidence": 0.0~1.0,
+  "reason": "详细判断理由（20字以上）",
+  "matching_features": ["匹配到的特征1", "匹配到的特征2"]
+}}"""
+
+    # 5. 用户 Prompt
+    user = f"""候选模板列表：
+{json.dumps(candidates, ensure_ascii=False, indent=2)}
+
+文件名：{file_row.filename}
+
+文档片段：
+<<<
+{sampled_text}
+>>>"""
+
+    # 6. 调用 LLM
+    data = await chat_json(llm_cfg.base_url, decrypt_api_key(llm_cfg.api_key_enc),
+                           llm_cfg.model, system, user)
+
+    # 7. 解析结果
+    schema_id = data.get("schema_id")
+    if schema_id:
+        try:
+            schema_id = uuid.UUID(str(schema_id))
+        except ValueError:
+            schema_id = None
+            logger.warning("LLM 返回的 schema_id 格式无效: %s", data.get("schema_id"))
+
+    return {
+        "schema_id": schema_id,
+        "confidence": float(data.get("confidence") or 0),
+        "reason": data.get("reason"),
+        "matching_features": data.get("matching_features", [])
+    }
+
+
+# ============================================================
+# 兼容层：默认使用增强版分类
+# ============================================================
+
+async def classify_file(file_row: UploadedFile, schemas: list[ExtractSchema],
+                        llm_cfg: LlmConfig, db: AsyncSession | None = None) -> dict:
+    """
+    智能匹配入口函数。
+
+    - 若 db 不为 None，使用增强版（classify_file_v2）
+    - 否则使用原版（保持向后兼容）
+    """
+    if db is not None:
+        return await classify_file_v2(file_row, schemas, llm_cfg, db)
+
+    # 原版实现（保持向后兼容）
+    head_text = ""
+    try:
+        local_path = get_storage().resolve(file_row.storage_path)
+        chunks = parse_file(local_path, max_pages=2)
+        head_text = "\n".join(c["text"] for c in chunks[:2])[:3000]
+    except Exception as exc:
+        logger.warning("分类前解析失败 %s: %s", file_row.filename, exc)
+
+    candidates = "\n".join(
+        f"- id: {s.id}\n  name: {s.name}\n  category: {s.category or ''}\n  description: {s.description or ''}"
+        for s in schemas)
+    system = (
+        "你是文件类型分类器。根据给定的文件名和文本片段，判断该文件最符合哪个模板类别。\n"
+        "只输出 JSON：{{\"schema_id\": \"...\", \"confidence\": 0~1, \"reason\": \"一句话理由\"}}\n"
+        "若都不匹配，schema_id 填 null。禁止编造。")
+    user = f"候选模板：\n{candidates}\n\n文件名：{file_row.filename}\n\n文件片段：\n<<<\n{head_text}\n>>>"
+
+    data = await chat_json(llm_cfg.base_url, decrypt_api_key(llm_cfg.api_key_enc),
+                           llm_cfg.model, system, user)
+    schema_id = data.get("schema_id")
+    if schema_id:
+        try:
+            schema_id = uuid.UUID(str(schema_id))
+        except ValueError:
+            schema_id = None
+    return {
+        "schema_id": schema_id,
+        "confidence": float(data.get("confidence") or 0),
+        "reason": data.get("reason"),
+    }
