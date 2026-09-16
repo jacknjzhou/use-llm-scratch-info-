@@ -35,6 +35,8 @@ input[type=text], input[type=password], select { border: 1px solid #d5d4cd; bord
 .drop:hover { background: #f4f8fd; }
 .chip { display: inline-block; padding: 4px 11px; border: 1px solid #e0dfd8; border-radius: 99px; font-size: 12px; margin: 0 6px 6px 0; cursor: pointer; color: #6b6a63; }
 .chip.on { background: #e6f1fb; border-color: #85b7eb; color: #185fa5; }
+.chip-more { background: #e6f1fb; border-color: #85b7eb; color: #185fa5; font-weight: 500; }
+.chip-more:hover { background: #d0e6f7; }
 .evi { color: #9a9992; font-size: 12px; border-left: 2px solid #e0dfd8; padding-left: 8px; }
 .err { color: #a32d2d; font-size: 12px; margin-top: 8px; }
 .ok { color: #3b6d11; font-size: 12px; margin-top: 8px; }
@@ -195,8 +197,13 @@ input[type=text], input[type=password], select { border: 1px solid #d5d4cd; bord
             <span class="muted">v{{ s.version }}</span>
           </div>
           <div class="muted" style="margin:6px 0">{{ s.category || '未分类' }} · {{ s.fields.length }} 个字段 · {{ s.description || '' }}</div>
-          <div><span class="chip" v-for="f in s.fields.slice(0,6)" :key="f.key">{{ f.label }}</span>
-            <span class="chip" v-if="s.fields.length>6">+{{ s.fields.length-6 }}</span></div>
+          <!-- 字段展示（展开/收起模式） -->
+          <div>
+            <span class="chip" v-for="f in (showAllFields === s.id ? s.fields : s.fields.slice(0,6))" :key="f.key">{{ f.label }}</span>
+            <span class="chip chip-more" v-if="s.fields.length>6" @click.stop="showAllFields = showAllFields === s.id ? null : s.id">
+              {{ showAllFields === s.id ? '收起' : '+' + (s.fields.length - 6) }}
+            </span>
+          </div>
           <div style="margin-top:10px;display:flex;gap:8px">
             <button class="btn" @click="openEditor(s)">编辑</button>
             <button class="btn" @click="copySchema(s)">复制</button>
@@ -289,6 +296,7 @@ createApp({
     const priority = ref(5);
     const launching = ref(false), launchError = ref('');
     const detail = ref(null), catFilter = ref('');
+    const showAllFields = ref(null);  // 当前展开显示全部字段的模板ID
     const cfgForm = ref({ id: null, name: '', base_url: '', api_key: '', model: '', is_default: false });
     const cfgMsg = ref({ ok: true, text: '' });
     let es = null;
@@ -476,7 +484,7 @@ createApp({
 
     onMounted(() => { loadSchemas(); loadConfigs(); });
     return { view, schemas, configs, tasks, uploaded, uploading, selectedSchema, selectedFields, selectedConfig,
-      launching, launchError, detail, catFilter, cfgForm, cfgMsg, currentSchema, categories, filteredSchemas,
+      launching, launchError, detail, catFilter, showAllFields, cfgForm, cfgMsg, currentSchema, categories, filteredSchemas,
       editor, editorError, openEditor, addField, delField, saveEditor,
       priority, correctField, download, importSchemaFile,
       loadTasks, loadSchemas, loadConfigs, uploadFiles, launch, openTask, reassign, cancelTask, fieldLabel,
