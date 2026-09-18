@@ -1,0 +1,57 @@
+# Document Extract MCP Server (独立部署用)
+services:
+  mcp-stdio:
+    build: .
+    container_name: doc-mcp-stdio
+    restart: unless-stopped
+    command: --mode stdio
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://extractor:extractor@postgres:5432/extractor}
+      API_BASE_URL: ${API_BASE_URL:-http://api:8000}
+      STORAGE_DIR: /app/storage
+      API_KEY: ${API_KEY:-}
+      OCR_LANG: ${OCR_LANG:-chi_sim+eng}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-50}
+    volumes:
+      - filedata:/app/storage
+      - ${MCP_FILE_PATH:-./data}:/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - doc-network
+
+  mcp-sse:
+    build: .
+    container_name: doc-mcp-sse
+    restart: unless-stopped
+    command: --mode sse --host 0.0.0.0 --port 8080
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://extractor:extractor@postgres:5432/extractor}
+      API_BASE_URL: ${API_BASE_URL:-http://api:8000}
+      STORAGE_DIR: /app/storage
+      API_KEY: ${API_KEY:-}
+      OCR_LANG: ${OCR_LANG:-chi_sim+eng}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-50}
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    volumes:
+      - filedata:/app/storage
+      - ${MCP_FILE_PATH:-./data}:/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - doc-network
+
+volumes:
+  filedata:
+
+networks:
+  doc-network:
+    name: doc-extract-network
+    external: true

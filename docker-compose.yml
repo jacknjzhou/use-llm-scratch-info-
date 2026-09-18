@@ -12,6 +12,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - doc-network
 
   redis:
     image: redis:7-alpine
@@ -22,6 +24,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - doc-network
 
   api:
     build: ./backend
@@ -50,6 +54,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - doc-network
 
   worker:
     build: ./backend
@@ -77,6 +83,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - doc-network
 
   frontend:
     image: nginx:alpine
@@ -87,8 +95,71 @@ services:
       - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
+    networks:
+      - doc-network
+
+  # ============================================================
+  # MCP Server 服务（支持 Stdio 和 SSE 两种模式）
+  # ============================================================
+  
+  mcp-sse-internal:
+    build: ./mcp-server
+    container_name: doc-mcp-stdio
+    restart: unless-stopped
+    # Stdio 模式：供 Claude Desktop 等 MCP Client 使用
+    command: --mode sse
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-extractor}:${POSTGRES_PASSWORD:-extractor}@postgres:5432/${POSTGRES_DB:-extractor}
+      API_BASE_URL: http://api:8000
+      STORAGE_DIR: /app/storage
+      API_KEY: ${API_KEY:-}
+      OCR_LANG: ${OCR_LANG:-chi_sim+eng}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-50}
+    volumes:
+      - filedata:/app/storage
+      # 挂载本地文件目录供 MCP 访问（根据需要调整路径）
+      - ${MCP_FILE_PATH:-./data}:/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - doc-network
+    # Stdio 模式不暴露端口，通过 docker socket 或 nfs 挂载访问
+
+  mcp-sse:
+    build: ./mcp-server
+    container_name: doc-mcp-sse
+    restart: unless-stopped
+    # SSE 模式：供 HTTP API 调用
+    command: --mode sse --host 0.0.0.0 --port 8080
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-extractor}:${POSTGRES_PASSWORD:-extractor}@postgres:5432/${POSTGRES_DB:-extractor}
+      API_BASE_URL: http://api:8000
+      STORAGE_DIR: /app/storage
+      API_KEY: ${API_KEY:-}
+      OCR_LANG: ${OCR_LANG:-chi_sim+eng}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-50}
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    volumes:
+      - filedata:/app/storage
+      - ${MCP_FILE_PATH:-./data}:/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - doc-network
 
 volumes:
   pgdata:
   redisdata:
   filedata:
+
+networks:
+  doc-network:
+    name: doc-extract-network
+    driver: bridge
